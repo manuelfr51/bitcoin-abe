@@ -1020,213 +1020,20 @@ store._ddl['txout_approx'],
                 int(nTime))
 
     def import_block(store, b, chain_ids=None, chain=None):
-
+        print "Processing block " + store.hashout_hex(b['hash'][::-1]) 
         # Import new transactions.
 
         if chain_ids is None:
             chain_ids = frozenset() if chain is None else frozenset([chain.id])
 
-        b['value_in'] = 0
-        b['value_out'] = 0
-        b['value_destroyed'] = 0
-        tx_hash_array = []
+        for tx in b['transactions']:
+          for txin in tx['txIn']:
+            if txin['prevout_hash'] != "\x00"*32:
+              pubkey = deserialize.extract_public_key(txin['scriptSig'])
+              hashd =  store.hashout_hex(pubkey)
+              print hashd
+              print base58.public_key_to_bc_address(pubkey)
 
-        # In the common case, all the block's txins _are_ linked, and we
-        # can avoid a query if we notice this.
-        all_txins_linked = True
-
-        for pos in xrange(len(b['transactions'])):
-            tx = b['transactions'][pos]
-
-            if 'hash' not in tx:
-                if chain is None:
-                    store.log.debug("Falling back to SHA256 transaction hash")
-                    tx['hash'] = util.double_sha256(tx['__data__'])
-                else:
-                    tx['hash'] = chain.transaction_hash(tx['__data__'])
-
-            tx_hash_array.append(tx['hash'])
-            tx['tx_id'] = store.tx_find_id_and_value(tx, pos == 0)
-
-            if tx['tx_id']:
-                all_txins_linked = False
-            else:
-                if store.commit_bytes == 0:
-                    tx['tx_id'] = store.import_and_commit_tx(tx, pos == 0, chain)
-                else:
-                    tx['tx_id'] = store.import_tx(tx, pos == 0, chain)
-                if tx.get('unlinked_count', 1) > 0:
-                    all_txins_linked = False
-
-            if tx['value_in'] is None:
-                b['value_in'] = None
-            elif b['value_in'] is not None:
-                b['value_in'] += tx['value_in']
-            b['value_out'] += tx['value_out']
-            b['value_destroyed'] += tx['value_destroyed']
-
-        # Get a new block ID.
-        block_id = int(store.new_id("block"))
-        b['block_id'] = block_id
-
-        if chain is not None:
-            # Verify Merkle root.
-            if b['hashMerkleRoot'] != chain.merkle_root(tx_hash_array):
-                raise MerkleRootMismatch(b['hash'], tx_hash_array)
-
-        # Look for the parent block.
-        hashPrev = b['hashPrev']
-        if chain is None:
-            # XXX No longer used.
-            is_genesis = hashPrev == util.GENESIS_HASH_PREV
-        else:
-            is_genesis = hashPrev == chain.genesis_hash_prev
-
-        (prev_block_id, prev_height, prev_work, prev_satoshis,
-         prev_seconds, prev_ss, prev_total_ss, prev_nTime) = (
-            (None, -1, 0, 0, 0, 0, 0, b['nTime'])
-            if is_genesis else
-            store.find_prev(hashPrev))
-
-        b['prev_block_id'] = prev_block_id
-        b['height'] = None if prev_height is None else prev_height + 1
-        b['chain_work'] = util.calculate_work(prev_work, b['nBits'])
-
-        if prev_seconds is None:
-            b['seconds'] = None
-        else:
-            b['seconds'] = prev_seconds + b['nTime'] - prev_nTime
-        if prev_satoshis is None or prev_satoshis < 0 or b['value_in'] is None:
-            # XXX Abuse this field to save work in adopt_orphans.
-            b['satoshis'] = -1 - b['value_destroyed']
-        else:
-            b['satoshis'] = prev_satoshis + b['value_out'] - b['value_in'] \
-                - b['value_destroyed']
-
-        if prev_satoshis is None or prev_satoshis < 0:
-            ss_created = None
-            b['total_ss'] = None
-        else:
-            ss_created = prev_satoshis * (b['nTime'] - prev_nTime)
-            b['total_ss'] = prev_total_ss + ss_created
-
-        if b['height'] is None or b['height'] < 2:
-            b['search_block_id'] = None
-        else:
-            b['search_block_id'] = store.get_block_id_at_height(
-                util.get_search_height(int(b['height'])),
-                None if prev_block_id is None else int(prev_block_id))
-
-        # Insert the block table row.
-        try:
-            store.sql(
-                """INSERT INTO block (
-                    block_id, block_hash, block_version, block_hashMerkleRoot,
-                    block_nTime, block_nBits, block_nNonce, block_height,
-                    prev_block_id, block_chain_work, block_value_in,
-                    block_value_out, block_total_satoshis,
-                    block_total_seconds, block_total_ss, block_num_tx,
-                    search_block_id
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )""",
-                (block_id, store.hashin(b['hash']), store.intin(b['version']),
-                 store.hashin(b['hashMerkleRoot']), store.intin(b['nTime']),
-                 store.intin(b['nBits']), store.intin(b['nNonce']),
-                 b['height'], prev_block_id,
-                 store.binin_int(b['chain_work'], WORK_BITS),
-                 store.intin(b['value_in']), store.intin(b['value_out']),
-                 store.intin(b['satoshis']), store.intin(b['seconds']),
-                 store.intin(b['total_ss']),
-                 len(b['transactions']), b['search_block_id']))
-
-        except store.dbmodule.DatabaseError:
-
-            if store.commit_bytes == 0:
-                # Rollback won't undo any previous changes, since we
-                # always commit.
-                store.rollback()
-                # If the exception is due to another process having
-                # inserted the same block, it is okay.
-                row = store.selectrow("""
-                    SELECT block_id, block_satoshi_seconds
-                      FROM block
-                     WHERE block_hash = ?""",
-                    (store.hashin(b['hash']),))
-                if row:
-                    store.log.info("Block already inserted; block_id %d unsued",
-                                   block_id)
-                    b['block_id'] = int(row[0])
-                    b['ss'] = None if row[1] is None else int(row[1])
-                    store.offer_block_to_chains(b, chain_ids)
-                    return
-
-            # This is not an expected error, or our caller may have to
-            # rewind a block file.  Let them deal with it.
-            raise
-
-        # List the block's transactions in block_tx.
-        for tx_pos in xrange(len(b['transactions'])):
-            tx = b['transactions'][tx_pos]
-            store.sql("""
-                INSERT INTO block_tx
-                    (block_id, tx_id, tx_pos)
-                VALUES (?, ?, ?)""",
-                      (block_id, tx['tx_id'], tx_pos))
-            store.log.info("block_tx %d %d", block_id, tx['tx_id'])
-
-        if b['height'] is not None:
-            store._populate_block_txin(block_id)
-
-            if all_txins_linked or not store._has_unlinked_txins(block_id):
-                b['ss_destroyed'] = store._get_block_ss_destroyed(
-                    block_id, b['nTime'],
-                    map(lambda tx: tx['tx_id'], b['transactions']))
-                if ss_created is None or prev_ss is None:
-                    b['ss'] = None
-                else:
-                    b['ss'] = prev_ss + ss_created - b['ss_destroyed']
-
-                store.sql("""
-                    UPDATE block
-                       SET block_satoshi_seconds = ?,
-                           block_ss_destroyed = ?
-                     WHERE block_id = ?""",
-                          (store.intin(b['ss']),
-                           store.intin(b['ss_destroyed']),
-                           block_id))
-            else:
-                b['ss_destroyed'] = None
-                b['ss'] = None
-
-        # Store the inverse hashPrev relationship or mark the block as
-        # an orphan.
-        if prev_block_id:
-            store.sql("""
-                INSERT INTO block_next (block_id, next_block_id)
-                VALUES (?, ?)""", (prev_block_id, block_id))
-        elif not is_genesis:
-            store.sql("INSERT INTO orphan_block (block_id, block_hashPrev)" +
-                      " VALUES (?, ?)", (block_id, store.hashin(b['hashPrev'])))
-
-        for row in store.selectall("""
-            SELECT block_id FROM orphan_block WHERE block_hashPrev = ?""",
-                                   (store.hashin(b['hash']),)):
-            (orphan_id,) = row
-            store.sql("UPDATE block SET prev_block_id = ? WHERE block_id = ?",
-                      (block_id, orphan_id))
-            store.sql("""
-                INSERT INTO block_next (block_id, next_block_id)
-                VALUES (?, ?)""", (block_id, orphan_id))
-            store.sql("DELETE FROM orphan_block WHERE block_id = ?",
-                      (orphan_id,))
-
-        # offer_block_to_chains calls adopt_orphans, which propagates
-        # block_height and other cumulative data to the blocks
-        # attached above.
-        store.offer_block_to_chains(b, chain_ids)
-
-        return block_id
 
     def _populate_block_txin(store, block_id):
         # Create rows in block_txin.  In case of duplicate transactions,
@@ -2728,6 +2535,7 @@ store._ddl['txout_approx'],
 
     # Load all blocks starting at the current file and offset.
     def catch_up_dir(store, dircfg):
+        print dircfg
         def open_blkfile(number):
             store._refresh_dircfg(dircfg)
             blkfile = {

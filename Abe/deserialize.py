@@ -1,7 +1,3 @@
-#
-#
-#
-
 from BCDataStream import *
 from enumeration import Enumeration
 from base58 import public_key_to_bc_address, hash_160_to_bc_address
@@ -311,7 +307,6 @@ def extract_public_key(bytes, version='\x00'):
     decoded = [ x for x in script_GetOp(bytes) ]
   except struct.error:
     return "(None)"
-
   # non-generated TxIn transactions push a signature
   # (seventy-something bytes) and then their public key
   # (33 or 65 bytes) onto the stack:
@@ -347,4 +342,8 @@ def extract_public_key(bytes, version='\x00'):
   if match_decoded(decoded, match):
     return hash_160_to_bc_address(decoded[1][1], version="\x05")
 
+  if len(decoded) == 1 and decoded[0][0] < opcodes.OP_PUSHDATA1:
+    #A script sig in txin
+    #return the public key
+    return decoded[0][1][0:65]
   return "(None)"
