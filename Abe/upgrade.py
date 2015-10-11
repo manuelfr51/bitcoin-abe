@@ -138,7 +138,7 @@ def init_block_txin(store):
                 added += 1
                 if count % 1000 == 0:
                     store.commit()
-                    store.log.info("commit %d", count)
+                    #store.log.info("commit %d", count)
         tried += 1
         if tried % 1000 == 0:
             sys.stdout.write('\r%d/%d ' % (added, tried))

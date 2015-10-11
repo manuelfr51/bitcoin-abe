@@ -1030,8 +1030,15 @@ store._ddl['txout_approx'],
           for txin in tx['txIn']:
             if txin['prevout_hash'] != "\x00"*32:
               pubkey = deserialize.extract_public_key(txin['scriptSig'])
+              if (pubkey):
+                hashd =  store.hashout_hex(pubkey)
+                print hashd
+                print base58.public_key_to_bc_address(pubkey)
+          for txout in tx['txOut']:
+            pubkey = deserialize.extract_public_key(txout['scriptPubKey'])
+            if (pubkey):
               hashd =  store.hashout_hex(pubkey)
-              print hashd
+              print "txout" + hashd
               print base58.public_key_to_bc_address(pubkey)
 
 
@@ -2308,7 +2315,7 @@ store._ddl['txout_approx'],
     def flush(store):
         if store.bytes_since_commit > 0:
             store.commit()
-            store.log.debug("commit")
+            #store.log.debug("commit")
             store.bytes_since_commit = 0
 
     def imported_bytes(store, size):
