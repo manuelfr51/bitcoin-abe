@@ -1026,21 +1026,24 @@ store._ddl['txout_approx'],
         if chain_ids is None:
             chain_ids = frozenset() if chain is None else frozenset([chain.id])
 
-        for tx in b['transactions']:
-          for txin in tx['txIn']:
-            if txin['prevout_hash'] != "\x00"*32:
-              pubkey = deserialize.extract_public_key(txin['scriptSig'])
+        count = 0
+        with open('pub_keys.txt', 'a') as outfile:
+          for tx in b['transactions']:
+            for txin in tx['txIn']:
+              if txin['prevout_hash'] != "\x00"*32:
+                pubkey = deserialize.extract_public_key(txin['scriptSig'])
+                if (pubkey):
+                  hashd =  store.hashout_hex(pubkey)
+                  outfile.write(hashd + "\n")
+                  count +=1
+            for txout in tx['txOut']:
+              pubkey = deserialize.extract_public_key(txout['scriptPubKey'])
               if (pubkey):
                 hashd =  store.hashout_hex(pubkey)
-                print hashd
-                print base58.public_key_to_bc_address(pubkey)
-          for txout in tx['txOut']:
-            pubkey = deserialize.extract_public_key(txout['scriptPubKey'])
-            if (pubkey):
-              hashd =  store.hashout_hex(pubkey)
-              print "txout" + hashd
-              print base58.public_key_to_bc_address(pubkey)
+                outfile.write(hashd + "\n")
+                count +=1
 
+        print "Found %d public keys"%count    
 
     def _populate_block_txin(store, block_id):
         # Create rows in block_txin.  In case of duplicate transactions,
